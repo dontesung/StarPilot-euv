@@ -177,8 +177,12 @@ def create_lka_icon_command(bus, active, critical, steer):
     dat = b"\x00\x00\x00"
   return make_can_msg(0x104c006c, dat, bus)
 
-def create_prndl2_command(packer, bus, press_regen_paddle):
-  prndl2_value = 7 if press_regen_paddle else 6
+def create_prndl2_command(packer, bus, press_regen_paddle, CP):
+  # Use PRNDL2 = 5 for Gen2, PRNDL2 = 7 for Gen0/Gen1 when paddle is pressed
+  if CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN2:
+    prndl2_value = 5 if press_regen_paddle else 6
+  else:
+    prndl2_value = 7 if press_regen_paddle else 6
   manual_mode = 1 if press_regen_paddle else 0
   values = {
     "Byte0": 0x0C,

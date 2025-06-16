@@ -28,11 +28,19 @@ CAM_MSG = 0x320  # AEBCmd
                  # TODO: Is this always linked to camera presence?
 ACCELERATOR_POS_MSG = 0xbe
 
+# Nested sigmoid parameters for Gen0 (2017) with separate left/right tuning
+NESTED_TORQUE_PARAMS = {
+  CAR.CHEVROLET_BOLT_GEN0: {
+    "left": [2.15, 1.0, 0.17, -0.04],
+    "right": [2.15, 1.0, 0.21, -0.04],
+  },
+}
+
+# Non-linear torque parameters for Gen1 and other GM models
 NON_LINEAR_TORQUE_PARAMS = {
-  CAR.CHEVROLET_BOLT_EUV: [1.8, 1.1, 0.290, -0.045],
-  CAR.CHEVROLET_BOLT_CC: [1.8, 1.1, 0.290, -0.045],
-  CAR.GMC_ACADIA: [4.78003305, 1.0, 0.3122, 0.05591772],
-  CAR.CHEVROLET_SILVERADO: [3.29974374, 1.0, 0.25571356, 0.0465122]
+  CAR.CHEVROLET_BOLT_GEN1: [1.8, 1.1, 0.290, -0.045],
+  CAR.GMC_ACADIA:        [4.78003305, 1.0, 0.3122, 0.05591772],
+  CAR.CHEVROLET_SILVERADO:[3.29974374, 1.0, 0.25571356, 0.0465122],
 }
 
 NEURAL_PARAMS_PATH = os.path.join(BASEDIR, 'selfdrive/car/torque_data/neural_ff_weights.json')
@@ -68,13 +76,16 @@ class CarInterface(CarInterfaceBase):
         z = exp(val)
         return z / (1 + z) - 0.5
 
-    # The "lat_accel vs torque" relationship is assumed to be the sum of "sigmoid + linear" curves
-    # An important thing to consider is that the slope at 0 should be > 0 (ideally >1)
-    # This has big effect on the stability about 0 (noise when going straight)
-    # ToDo: To generalize to other GMs, explore tanh function as the nonlinear
-    non_linear_torque_params = NON_LINEAR_TORQUE_PARAMS.get(self.CP.carFingerprint)
-    assert non_linear_torque_params, "The params are not defined"
-    a, b, c, d = non_linear_torque_params
+    # Select torque parameters based on car generation and direction
+    if self.CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN0:
+      nested = NESTED_TORQUE_PARAMS[self.CP.carFingerprint]
+      if latcontrol_inputs.lateral_acceleration >= 0:
+        params = nested["left"]
+      else:
+        params = nested["right"]
+    else:
+      params = NON_LINEAR_TORQUE_PARAMS.get(self.CP.carFingerprint)
+    a, b, c, d = params
     steer_torque = (sig(latcontrol_inputs.lateral_acceleration * a) * b) + (latcontrol_inputs.lateral_acceleration * c) + d
     return float(steer_torque) + friction
 
@@ -87,7 +98,11 @@ class CarInterface(CarInterfaceBase):
     return float(self.neural_ff_model.predict(inputs)) + friction
 
   def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
-      return self.torque_from_lateral_accel_siglin
+    # Use neural tuner on Gen2, SigLin on Gen0/Gen1 and other Non-linear models
+    if self.CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN2:
+      self.neural_ff_model = NanoFFModel(NEURAL_PARAMS_PATH, self.CP.carFingerprint)
+      return self.torque_from_lateral_accel_neural
+    return self.torque_from_lateral_accel_siglin
 
   @staticmethod
   def _get_params(ret, candidate, fingerprint, car_fw, experimental_long, docs, frogpilot_toggles):
@@ -200,14 +215,18 @@ class CarInterface(CarInterfaceBase):
         ret.steerActuatorDelay = 0.2
         CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
-    elif candidate in (CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_BOLT_CC):
+    elif candidate in (CAR.CHEVROLET_BOLT_GEN0,
+                       CAR.CHEVROLET_BOLT_GEN1,
+                       CAR.CHEVROLET_BOLT_GEN2):
       ret.steerActuatorDelay = 0.2
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       ret.lateralTuning.torque.kp = 0.6
 
       if ret.enableGasInterceptor:
-        # ACC Bolts use pedal for full longitudinal control, not just sng
         ret.flags |= GMFlags.PEDAL_LONG.value
+        # Gen0: enable 450 max-steer limit in Panda safety
+        if candidate == CAR.CHEVROLET_BOLT_GEN0:
+          ret.safetyConfigs[0].safetyParam |= Panda.FLAG_GM_GEN0
 
     elif candidate == CAR.CHEVROLET_SILVERADO:
       # On the Bolt, the ECM and camera independently check that you are either above 5 kph or at a stop

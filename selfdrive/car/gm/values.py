@@ -10,69 +10,133 @@ from openpilot.selfdrive.car.fw_query_definitions import FwQueryConfig, Request,
 Ecu = car.CarParams.Ecu
 
 
+
 class CarControllerParams:
-  STEER_MAX = 300  # GM limit is 3Nm. Used by carcontroller to generate LKA output
-  STEER_STEP = 3  # Active control frames per command (~33hz)
-  INACTIVE_STEER_STEP = 10  # Inactive control frames per command (10hz)
-  STEER_DELTA_UP = 10  # Delta rates require review due to observed EPS weakness
-  STEER_DELTA_DOWN = 15
-  STEER_DRIVER_ALLOWANCE = 65
-  STEER_DRIVER_MULTIPLIER = 4
-  STEER_DRIVER_FACTOR = 100
-  NEAR_STOP_BRAKE_PHASE = 0.25  # m/s
-  SNG_INTERCEPTOR_GAS = 18. / 255.
-  SNG_TIME = 30  # frames until the above is reached
+  # EV gas/brake threshold tables for Gen2 no-paddle models
+  EV_GAS_BRAKE_THRESHOLD_BP = [1.29, 1.52, 1.55, 1.6, 1.7, 1.8, 2.0, 2.2, 2.5, 5.52, 9.6, 20.5, 23.5, 35.0]
+  EV_GAS_BRAKE_THRESHOLD_V  = [0.0, -0.14, -0.16, -0.18, -0.215, -0.25, -0.33, -0.41, -0.5, -0.72, -0.895, -1.125, -1.145, -1.16]
+  # For Gen0 (2017), the Panda safety flag GM_PARAM_GEN0 must be set
+  # so that the hardware safety code uses max_steer=450.
 
-  # Heartbeat for dash "Service Adaptive Cruise" and "Service Front Camera"
-  ADAS_KEEPALIVE_STEP = 100
-  CAMERA_KEEPALIVE_STEP = 100
+  def _init_common(self, CP, zero_gas, max_brake, steer_max, steer_delta_up, steer_delta_down, steer_driver_allowance, steer_driver_multiplier, gen2_brake_switch=False):
+    # Shared zero gas and brake
+    self.ZERO_GAS = zero_gas
+    self.MAX_BRAKE = max_brake
 
-  # Allow small margin below -3.5 m/s^2 from ISO 15622:2018 since we
-  # perform the closed loop control, and might need some
-  # to apply some more braking if we're on a downhill slope.
-  # Our controller should still keep the 2 second average above
-  # -3.5 m/s^2 as per planner limits
-  ACCEL_MAX = 2.  # m/s^2
-  ACCEL_MAX_PLUS = 4.  # m/s^2
-  ACCEL_MIN = -4.  # m/s^2
-
-  def __init__(self, CP):
     # Gas/brake lookups
-    self.ZERO_GAS = 6144  # Coasting
-    self.MAX_BRAKE = 400  # ~ -4.0 m/s^2 with regen
-
     if CP.carFingerprint in CAMERA_ACC_CAR and CP.carFingerprint not in CC_ONLY_CAR and CP.carFingerprint != CAR.CHEVROLET_BOLT_EUV:
       self.MAX_GAS = 7496
       self.MAX_GAS_PLUS = 8848
       self.MAX_ACC_REGEN = 5610
       self.INACTIVE_REGEN = 5650
-      # Camera ACC vehicles have no regen while enabled.
-      # Camera transitions to MAX_ACC_REGEN from ZERO_GAS and uses friction brakes instantly
       self.max_regen_acceleration = 0.
-
     elif CP.carFingerprint in SDGM_CAR:
       self.MAX_GAS = 7496
       self.MAX_GAS_PLUS = 7496
       self.MAX_ACC_REGEN = 7110
       self.INACTIVE_REGEN = 5650
       self.max_regen_acceleration = 0.
-
     else:
-      self.MAX_GAS = 7168  # Safety limit, not ACC max. Stock ACC >8192 from standstill.
-      self.MAX_GAS_PLUS = 8191 # 8292 uses new bit, possible but not tested. Matches Twilsonco tw-main max
-      self.MAX_ACC_REGEN = 7110  # Increased for stronger regen braking
+      self.MAX_GAS = 7168
+      self.MAX_GAS_PLUS = 8191
+      self.MAX_ACC_REGEN = 7110
       self.INACTIVE_REGEN = 5500
-      # ICE has much less engine braking force compared to regen in EVs,
-      # lower threshold removes some braking deadzone
-      self.max_regen_acceleration = -3. if CP.carFingerprint in EV_CAR else -0.1  # More aggressive regen for EVs
+      self.max_regen_acceleration = -3.
 
+    # Lookups
     self.GAS_LOOKUP_BP = [self.max_regen_acceleration, 0., self.ACCEL_MAX]
     self.GAS_LOOKUP_BP_PLUS = [self.max_regen_acceleration, 0., self.ACCEL_MAX_PLUS]
     self.GAS_LOOKUP_V = [self.MAX_ACC_REGEN, self.ZERO_GAS, self.MAX_GAS]
     self.GAS_LOOKUP_V_PLUS = [self.MAX_ACC_REGEN, self.ZERO_GAS, self.MAX_GAS_PLUS]
-
     self.BRAKE_LOOKUP_BP = [self.ACCEL_MIN, self.max_regen_acceleration]
     self.BRAKE_LOOKUP_V = [self.MAX_BRAKE, 0.]
+
+    # Common steering params
+    self.STEER_MAX = steer_max
+    self.STEER_STEP = 3
+    self.INACTIVE_STEER_STEP = 10
+    self.STEER_DELTA_UP = steer_delta_up
+    self.STEER_DELTA_DOWN = steer_delta_down
+    self.STEER_DRIVER_ALLOWANCE = steer_driver_allowance
+    self.STEER_DRIVER_MULTIPLIER = steer_driver_multiplier
+    self.STEER_DRIVER_FACTOR = 100
+
+    # Shared constants
+    self.NEAR_STOP_BRAKE_PHASE = 0.25
+    self.SNG_INTERCEPTOR_GAS = 18. / 255.
+    self.SNG_TIME = 30
+    self.ADAS_KEEPALIVE_STEP = 100
+    self.CAMERA_KEEPALIVE_STEP = 100
+    self.ACCEL_MAX = 2.
+    self.ACCEL_MAX_PLUS = 4.
+    self.ACCEL_MIN = -4.
+
+    # Gen2-only brake-switch params
+    if gen2_brake_switch:
+      self.BRAKE_SWITCH_MAX = self.MAX_ACC_REGEN
+      self.BRAKE_SWITCH_LOOKUP_BP = [0.5, 8.9, 9.0, 20.0]
+      self.BRAKE_SWITCH_LOOKUP_V = [self.BRAKE_SWITCH_MAX, self.BRAKE_SWITCH_MAX, self.ZERO_GAS, self.ZERO_GAS]
+
+  def __init__(self, CP):
+    # Dispatch to the exact original logic for each generation
+    if CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN0:
+      return self._init_gen0(CP)
+    if CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN1:
+      return self._init_gen1(CP)
+    if CP.carFingerprint == CAR.CHEVROLET_BOLT_GEN2:
+      return self._init_gen2(CP)
+    # Fallback: treat unknown as Gen1
+    return self._init_gen1(CP)
+
+  def _init_gen0(self, CP):
+    # Gen0 (2017) uses 450-steer and no brake-switch
+    self._init_common(CP,
+      zero_gas=6144,
+      max_brake=400,
+      steer_max=450,
+      steer_delta_up=15,
+      steer_delta_down=34,
+      steer_driver_allowance=78,
+      steer_driver_multiplier=6,
+      gen2_brake_switch=False
+    )
+
+  def _init_gen1(self, CP):
+    # Gen1 (2018-21) shares 300-steer and no brake-switch
+    self._init_common(CP,
+      zero_gas=6144,
+      max_brake=400,
+      steer_max=300,
+      steer_delta_up=10,
+      steer_delta_down=15,
+      steer_driver_allowance=65,
+      steer_driver_multiplier=4,
+      gen2_brake_switch=False
+    )
+
+  def update_ev_gas_brake_threshold(self, v_ego):
+    gas_brake_threshold = interp(v_ego, self.EV_GAS_BRAKE_THRESHOLD_BP, self.EV_GAS_BRAKE_THRESHOLD_V)
+    # EV-specific lookups
+    self.EV_GAS_LOOKUP_BP       = [gas_brake_threshold, max(0., gas_brake_threshold), self.ACCEL_MAX]
+    self.EV_GAS_LOOKUP_BP_PLUS  = [gas_brake_threshold, max(0., gas_brake_threshold), self.ACCEL_MAX_PLUS]
+    self.EV_BRAKE_LOOKUP_BP     = [self.ACCEL_MIN, gas_brake_threshold]
+
+  def _init_gen2(self, CP):
+    # Gen2 (2022-23) shares 300-steer and adds brake-switch tuning
+    self._init_common(CP,
+      zero_gas=6150,
+      max_brake=400,
+      steer_max=300,
+      steer_delta_up=10,
+      steer_delta_down=15,
+      steer_driver_allowance=65,
+      steer_driver_multiplier=4,
+      gen2_brake_switch=True
+    )
+    # Gen2 no-paddle: initialize EV gas/brake thresholds lookups
+    if not CP.enableGasInterceptor:
+      # set initial threshold based on zero speed
+      self.update_ev_gas_brake_threshold(0.0)
 
 
 
@@ -174,10 +238,19 @@ class CAR(Platforms):
     [GMCarDocs("Chevrolet Volt 2017-18 - No-ACC", min_enable_speed=0)],
     CHEVROLET_VOLT.specs,
   )
-  CHEVROLET_BOLT_CC = GMPlatformConfig(
+  # Generation-specific Bolt EV/EUV configs (all share EUV specs)
+  CHEVROLET_BOLT_GEN0 = GMPlatformConfig(
+    [GMCarDocs("Chevrolet Bolt EV 2017")],
+    CHEVROLET_BOLT_EUV.specs,
+  )
+  CHEVROLET_BOLT_GEN1 = GMPlatformConfig(
+    [GMCarDocs("Chevrolet Bolt EV 2018-21")],
+    CHEVROLET_BOLT_EUV.specs,
+  )
+  CHEVROLET_BOLT_GEN2 = GMPlatformConfig(
     [
-      GMCarDocs("Chevrolet Bolt EUV 2022-23 - No-ACC"),
-      GMCarDocs("Chevrolet Bolt EV 2017-23 - No-ACC"),
+      GMCarDocs("Chevrolet Bolt EV 2022-23"),
+      GMCarDocs("Chevrolet Bolt EUV 2022-23"),
     ],
     CHEVROLET_BOLT_EUV.specs,
   )
@@ -309,18 +382,42 @@ FW_QUERY_CONFIG = FwQueryConfig(
   extra_ecus=[(Ecu.fwdCamera, 0x24b, None)],
 )
 
-EV_CAR = {CAR.CHEVROLET_VOLT, CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_VOLT_CC, CAR.CHEVROLET_BOLT_CC}
-CC_ONLY_CAR = {CAR.CHEVROLET_VOLT_CC, CAR.CHEVROLET_BOLT_CC, CAR.CHEVROLET_EQUINOX_CC, CAR.CHEVROLET_SUBURBAN_CC, CAR.GMC_YUKON_CC, CAR.CADILLAC_CT6_CC, CAR.CHEVROLET_TRAILBLAZER_CC, CAR.CADILLAC_XT5_CC, CAR.CHEVROLET_MALIBU_CC}
-CC_REGEN_PADDLE_CAR = {CAR.CHEVROLET_BOLT_CC, CAR.CHEVROLET_BOLT_EUV}
+# Update sets to use only GEN0/GEN1/GEN2, not CC variants
+EV_CAR = {CAR.CHEVROLET_VOLT, CAR.CHEVROLET_BOLT_GEN0, CAR.CHEVROLET_BOLT_GEN1, CAR.CHEVROLET_BOLT_GEN2, CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_VOLT_CC}
+CC_ONLY_CAR = {
+  CAR.CHEVROLET_VOLT_CC,
+  CAR.CHEVROLET_EQUINOX_CC,
+  CAR.CHEVROLET_SUBURBAN_CC,
+  CAR.GMC_YUKON_CC,
+  CAR.CADILLAC_CT6_CC,
+  CAR.CHEVROLET_TRAILBLAZER_CC,
+  CAR.CADILLAC_XT5_CC,
+  CAR.CHEVROLET_MALIBU_CC,
+  CAR.CHEVROLET_BOLT_GEN0,
+  CAR.CHEVROLET_BOLT_GEN1,
+  CAR.CHEVROLET_BOLT_GEN2,
+}
+CC_REGEN_PADDLE_CAR = {CAR.CHEVROLET_BOLT_GEN0, CAR.CHEVROLET_BOLT_GEN1, CAR.CHEVROLET_BOLT_GEN2}
 # CC_ONLY_CAR = set(c for c in CAR if str(c).endswith('_CC'))
 
 # We're integrated at the Safety Data Gateway Module on these cars
 SDGM_CAR = {CAR.CADILLAC_XT4, CAR.CHEVROLET_TRAVERSE, CAR.BUICK_BABYENCLAVE}
 
 # We're integrated at the camera with VOACC on these cars (instead of ASCM w/ OBD-II harness)
-CAMERA_ACC_CAR = {CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_EQUINOX, CAR.CHEVROLET_TRAILBLAZER, CAR.CHEVROLET_TRAX}
-CAMERA_ACC_CAR.update({CAR.CHEVROLET_VOLT_CC, CAR.CHEVROLET_BOLT_CC, CAR.CHEVROLET_EQUINOX_CC, CAR.GMC_YUKON_CC, CAR.CADILLAC_CT6_CC, CAR.CHEVROLET_TRAILBLAZER_CC, CAR.CADILLAC_XT5_CC, CAR.CHEVROLET_MALIBU_CC})
-# CAMERA_ACC_CAR.update(CC_ONLY_CAR)
+CAMERA_ACC_CAR = {
+  CAR.CHEVROLET_BOLT_EUV,
+  CAR.CHEVROLET_SILVERADO,
+  CAR.CHEVROLET_EQUINOX,
+  CAR.CHEVROLET_TRAILBLAZER,
+  CAR.CHEVROLET_TRAX,
+  CAR.CHEVROLET_VOLT_CC,
+  CAR.CHEVROLET_EQUINOX_CC,
+  CAR.GMC_YUKON_CC,
+  CAR.CADILLAC_CT6_CC,
+  CAR.CHEVROLET_TRAILBLAZER_CC,
+  CAR.CADILLAC_XT5_CC,
+  CAR.CHEVROLET_MALIBU_CC,
+}
 
 STEER_THRESHOLD = 1.0
 
