@@ -137,14 +137,6 @@ class CarController(CarControllerBase):
     regen_active = raw_regen_active
 
     # === Spoof scheduling: midpoint + overflow (~40Hz) ===
-    # Implement 1s hold-off after CAN reconnect
-    # Detect reconnect: loopback_lka_steering_cmd_ts_nanos == 0 and self.last_steer_ts_ns != 0
-    if CS.loopback_lka_steering_cmd_ts_nanos == 0 and self.last_steer_ts_ns != 0:
-      self.loopback_holdoff_until = now_nanos + 1_000_000_000
-    # Remove holdoff if expired
-    if hasattr(self, "loopback_holdoff_until") and now_nanos >= self.loopback_holdoff_until:
-      del self.loopback_holdoff_until
-
     # Rising-edge reset on regen start
     if raw_regen_active and not self.last_regen_active:
       self.prev_steer_ts_ns = self.last_steer_ts_ns
@@ -166,11 +158,8 @@ class CarController(CarControllerBase):
       # Accumulate extra spoofs needed above 33Hz base to reach 40Hz
       self.spoof_accum += (40.0/33.0 - 1.0)
 
-      # 500ms holdoff after reconnect: skip spoof scheduling if active
-      skip_spoof = hasattr(self, "loopback_holdoff_until") and now_nanos < self.loopback_holdoff_until
-
-      # Midpoint spoof: one per interval; avoid sending if loopback stale
-      if not skip_spoof and not self.spoof_mid_sent and interval_ns > 0:
+      # Midpoint spoof: one per interval
+      if not self.spoof_mid_sent and interval_ns > 0:
         midpoint_ns = self.prev_steer_ts_ns + interval_ns // 2
         if (CS.loopback_lka_steering_cmd_ts_nanos != 0 and
             now_nanos - CS.loopback_lka_steering_cmd_ts_nanos < 10_000_000 and
@@ -182,7 +171,7 @@ class CarController(CarControllerBase):
           self.spoof_mid_sent = True
 
       # Overflow spoof: insert extra when accumulator allows
-      if not skip_spoof and self.spoof_accum >= 0.5 and not self.spoof_over_sent and interval_ns > 0:
+      if self.spoof_accum >= 0.5 and not self.spoof_over_sent and interval_ns > 0:
         slot2_ns = self.prev_steer_ts_ns + (interval_ns * 2) // 3
         if (CS.loopback_lka_steering_cmd_ts_nanos != 0 and
             now_nanos - CS.loopback_lka_steering_cmd_ts_nanos < 10_000_000 and
