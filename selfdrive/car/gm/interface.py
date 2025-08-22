@@ -114,11 +114,14 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalTuning.kiBP = [5., 35., 60.]
 
     if candidate in CAMERA_ACC_CAR:
-      ret.experimentalLongitudinalAvailable = candidate not in CC_ONLY_CAR
+      # For ACC models with pedal interceptor, behave like CC_ONLY_CAR
+      ret.experimentalLongitudinalAvailable = (candidate not in CC_ONLY_CAR) and not ret.enableGasInterceptor
       ret.networkLocation = NetworkLocation.fwdCamera
       ret.radarUnavailable = True  # no radar
-      ret.pcmCruise = True
+      # Only use pcmCruise if no pedal interceptor (bolt_cc style behavior)
+      ret.pcmCruise = not ret.enableGasInterceptor
       ret.safetyConfigs[0].safetyParam |= Panda.FLAG_GM_HW_CAM
+      # Use default minEnableSpeed for ACC models (will be overridden by pedal interceptor section if present)
       ret.minEnableSpeed = 5 * CV.KPH_TO_MS
       ret.minSteerSpeed = 10 * CV.KPH_TO_MS
 
@@ -210,9 +213,11 @@ class CarInterface(CarInterfaceBase):
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       ret.lateralTuning.torque.kp = 0.6
 
-      if ret.enableGasInterceptor:
-        # ACC Bolts use pedal for full longitudinal control, not just sng
-        ret.flags |= GMFlags.PEDAL_LONG.value
+    # Enable pedal interceptor for ACC models when detected
+    if candidate in CAMERA_ACC_CAR and ret.enableGasInterceptor:
+      # ACC models with pedal interceptor get full pedal longitudinal control
+      ret.flags |= GMFlags.PEDAL_LONG.value
+      ret.safetyConfigs[0].safetyParam |= Panda.FLAG_GM_NO_ACC
 
     elif candidate == CAR.CHEVROLET_SILVERADO:
       # On the Bolt, the ECM and camera independently check that you are either above 5 kph or at a stop
@@ -274,7 +279,7 @@ class CarInterface(CarInterfaceBase):
       ret.stoppingControl = True
       ret.autoResumeSng = True
 
-      if candidate in CC_ONLY_CAR: #pedal interceptor tuning
+      if candidate in CC_ONLY_CAR or (candidate in CAMERA_ACC_CAR and ret.enableGasInterceptor): #pedal interceptor tuning
         ret.flags |= GMFlags.PEDAL_LONG.value
         ret.safetyConfigs[0].safetyParam |= Panda.FLAG_GM_PEDAL_LONG
         # Note: Low speed, stop and go not tested. Should be fairly smooth on highway

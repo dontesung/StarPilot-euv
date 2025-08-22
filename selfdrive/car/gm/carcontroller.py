@@ -11,7 +11,7 @@ from openpilot.common.params_pyx import Params
 from opendbc.can.packer import CANPacker
 from openpilot.selfdrive.car import apply_driver_steer_torque_limits, create_gas_interceptor_command
 from openpilot.selfdrive.car.gm import gmcan
-from openpilot.selfdrive.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, CC_ONLY_CAR, SDGM_CAR, EV_CAR, AccState, CC_REGEN_PADDLE_CAR
+from openpilot.selfdrive.car.gm.values import CAR, DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, CC_ONLY_CAR, SDGM_CAR, EV_CAR, AccState, CC_REGEN_PADDLE_CAR
 from openpilot.selfdrive.car.interfaces import CarControllerBase
 from openpilot.selfdrive.controls.lib.drive_helpers import apply_deadzone
 from openpilot.selfdrive.controls.lib.vehicle_model import ACCELERATION_DUE_TO_GRAVITY
@@ -428,7 +428,7 @@ class CarController(CarControllerBase):
           if CC.cruiseControl.resume and CS.pcm_acc_status == AccState.STANDSTILL and frogpilot_toggles.volt_sng:
             acc_engaged = False
           else:
-            acc_engaged = CC.enabled
+            acc_engaged = CC.enabled and not (self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV and self.CP.enableGasInterceptor)
 
           # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
           can_sends.append(gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, self.apply_gas, idx, acc_engaged, at_full_stop))
@@ -461,11 +461,15 @@ class CarController(CarControllerBase):
       # TODO: integrate this with the code block below?
       if (
           (self.CP.flags & GMFlags.PEDAL_LONG.value)  # Always cancel stock CC when using pedal interceptor
-          or (self.CP.flags & GMFlags.CC_LONG.value and not CC.enabled)  # Cancel stock CC if OP is not active
+          or (self.CP.flags & GMFlags.CC_LONG.value)  # Match ACC behavior for non-ACC cars
       ) and CS.out.cruiseState.enabled:
         if (self.frame - self.last_button_frame) * DT_CTRL > 0.04:
           self.last_button_frame = self.frame
-          can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.POWERTRAIN, (CS.buttons_counter + 1) % 4, CruiseButtons.CANCEL))
+          # Send cancel to appropriate bus based on car type (match stock longitudinal logic)
+          if self.CP.carFingerprint in SDGM_CAR:
+            can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.POWERTRAIN, (CS.buttons_counter + 1) % 4, CruiseButtons.CANCEL))
+          else:
+            can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.CAMERA, (CS.buttons_counter + 1) % 4, CruiseButtons.CANCEL))
 
     else:
       # While car is braking, cancel button causes ECM to enter a soft disable state with a fault status.
