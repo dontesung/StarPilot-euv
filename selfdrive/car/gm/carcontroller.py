@@ -24,13 +24,13 @@ TransmissionType = car.CarParams.TransmissionType
 # Camera cancels up to 0.1s after brake is pressed, ECM allows 0.5s
 CAMERA_CANCEL_DELAY_FRAMES = 10
 # Enforce a minimum interval between steering messages to avoid a fault
-MIN_STEER_MSG_INTERVAL_MS = 1
+MIN_STEER_MSG_INTERVAL_MS = 15
 # Two‑sided spacing tuned for ~33 Hz steer; target a 10 ms wide window per interval
 # Paddle spoofing and scheduling constants
-PADDLE_STEER_GAP_MIN_NS = 5_000_000   # ≥5 ms each side (EPS guard)
+PADDLE_STEER_GAP_MIN_NS = 12_000_000   # ≥12 ms each side (EPS guard)
 PADDLE_STEER_GAP_MAX_NS = 12_000_000  # cap for long intervals
 PADDLE_GAP_TARGET_NS    = 5_000_000   # aim per‑side gap even if interval//2 − early is larger
-PADDLE_NONBLOCK_GAP_NS  = 1_000_000   # ≥1 ms since last paddle send
+PADDLE_NONBLOCK_GAP_NS  = 3_000_000   # ≥3 ms since last paddle send
 PADDLE_SLOT_EARLY_NS    = 1_000_000   # allow firing up to 1 ms before slot
 OVERFLOW_THRESH         = 1.00        # fire one extra slot whenever credits ≥ 1.0
 PADDLE_TARGET_HZ        = 42.0        # desired paddle rate (Hz) when regen active; steer is ~33 Hz
@@ -164,6 +164,7 @@ class CarController(CarControllerBase):
     if raw_regen_active:
       # Interval between last two bus-0 steer sends
       interval_ns = self.last_steer_ts_ns - self.prev_steer_ts_ns
+      steer_phase = self.last_steer_frame % 3
 
       # Adaptive two‑sided gap sized to the current steer interval, but capped to a target so the window stays wide enough
       gap_ns = (PADDLE_STEER_GAP_MIN_NS if interval_ns <= 0 else
@@ -195,9 +196,9 @@ class CarController(CarControllerBase):
         delta_after_ns = now_nanos - self.last_steer_ts_ns
         delta_before_ns = (next_steer_ts_ns - now_nanos) if interval_ns > 0 else 1_000_000_000
         if (CS.out.vEgo > 2.68
+            and (self.frame % 3) != steer_phase
             and now_nanos >= (midpoint_ns - PADDLE_SLOT_EARLY_NS)
-            and delta_after_ns >= gap_ns
-            and delta_before_ns >= gap_ns):
+            and delta_after_ns >= gap_ns):
           # Non-blocking 1 ms spacing for paddle frames
           if now_nanos - self.last_paddle_ts_ns >= PADDLE_NONBLOCK_GAP_NS:
             paddle_sends.append(gmcan.create_prndl2_command(self.packer_pt, CanBus.POWERTRAIN, True))
@@ -220,6 +221,7 @@ class CarController(CarControllerBase):
         delta_after_ns = now_nanos - self.last_steer_ts_ns
         delta_before_ns = (next_steer_ts_ns - now_nanos) if interval_ns > 0 else 1_000_000_000
         if (CS.out.vEgo > 2.68
+            and (self.frame % 3) != steer_phase
             and now_nanos >= (slot2_ns - PADDLE_SLOT_EARLY_NS)
             and delta_after_ns >= gap_ns
             and delta_before_ns >= gap_ns):
@@ -254,6 +256,7 @@ class CarController(CarControllerBase):
                          self.regen_paddle_timer)
           # Two-sided spacing to steer before sending
           interval_ns = self.last_steer_ts_ns - self.prev_steer_ts_ns
+          steer_phase = self.last_steer_frame % 3
           gap_ns = (PADDLE_STEER_GAP_MIN_NS if interval_ns <= 0 else
                     max(PADDLE_STEER_GAP_MIN_NS,
                         min(PADDLE_STEER_GAP_MAX_NS,
@@ -261,7 +264,7 @@ class CarController(CarControllerBase):
           next_steer_ts_ns = self.last_steer_ts_ns + interval_ns if interval_ns > 0 else 0
           delta_after_ns = now_nanos - self.last_steer_ts_ns
           delta_before_ns = (next_steer_ts_ns - now_nanos) if interval_ns > 0 else 1_000_000_000
-          if (delta_after_ns >= gap_ns and delta_before_ns >= gap_ns):
+          if ((self.frame % 3) != steer_phase and delta_after_ns >= gap_ns):
             # Non-blocking 1 ms spacing for paddle frames
             if now_nanos - self.last_paddle_ts_ns >= PADDLE_NONBLOCK_GAP_NS:
               paddle_sends.append(gmcan.create_prndl2_command(self.packer_pt, CanBus.POWERTRAIN, False))
